@@ -13,7 +13,7 @@ class StudyInput:
     Input parameters for a bioequivalence study.
     """
     drug_name: str
-    fasting: bool = True  # True = fasted (натощак), False = fed
+    fasting: bool = True  # True = fasted, False = fed
     cv_category: str = "low"  # "low", "medium", "high"
 
 

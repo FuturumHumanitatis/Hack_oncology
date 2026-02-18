@@ -125,6 +125,10 @@ class PubMedPKDataSource:
         return []
 
 
+CV_CATEGORY_MAP = {"low": 0.15, "medium": 0.25, "high": 0.40}
+CV_DEFAULT = 0.25
+
+
 def get_pk_parameters(study_input: StudyInput) -> PKProfile:
     """
     Return PK parameters for a given StudyInput.
@@ -135,8 +139,7 @@ def get_pk_parameters(study_input: StudyInput) -> PKProfile:
     Returns:
         PKProfile populated with representative PK parameters.
     """
-    cv_map = {"low": 0.15, "medium": 0.25, "high": 0.40}
-    cv = cv_map.get(study_input.cv_category, 0.25)
+    cv = CV_CATEGORY_MAP.get(study_input.cv_category, CV_DEFAULT)
 
     condition = "fasted" if study_input.fasting else "fed"
 
