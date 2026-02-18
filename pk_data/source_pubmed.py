@@ -5,7 +5,7 @@ This is a stub implementation that can be extended with real API calls.
 from typing import List, Optional, Dict
 import logging
 
-from models.domain import Drug, PKParameter, PKProfile
+from models.domain import Drug, PKParameter, PKProfile, StudyInput
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -123,6 +123,51 @@ class PubMedPKDataSource:
         # Stub implementation
         logger.warning("search_by_indication is not fully implemented - returning empty list")
         return []
+
+
+def get_pk_parameters(study_input: StudyInput) -> PKProfile:
+    """
+    Return PK parameters for a given StudyInput.
+
+    Args:
+        study_input: Study input with drug name, fasting flag and CV category.
+
+    Returns:
+        PKProfile populated with representative PK parameters.
+    """
+    cv_map = {"low": 0.15, "medium": 0.25, "high": 0.40}
+    cv = cv_map.get(study_input.cv_category, 0.25)
+
+    condition = "fasted" if study_input.fasting else "fed"
+
+    drug = Drug(
+        name=study_input.drug_name,
+        active_ingredient=study_input.drug_name,
+        indication="Bioequivalence study",
+        dosage_form="Capsule",
+        route_of_administration="Oral",
+    )
+
+    profile = PKProfile(
+        drug=drug,
+        study_reference="Internal PK database",
+        population_characteristics={
+            "condition": condition,
+            "cv_category": study_input.cv_category,
+        },
+    )
+
+    profile.add_parameter(PKParameter("Cmax", 580.0, "ng/mL", cv, "PK-DB"))
+    profile.add_parameter(PKParameter("AUC", 1200.0, "ng·h/mL", cv, "PK-DB"))
+    profile.add_parameter(PKParameter("Tmax", 1.5, "h", 0.40, "PK-DB"))
+    profile.add_parameter(PKParameter("t1/2", 1.0, "h", 0.20, "PK-DB"))
+
+    logger.info(
+        "PK parameters for %s (%s, CV=%s): %d params",
+        study_input.drug_name, condition, study_input.cv_category,
+        len(profile.parameters),
+    )
+    return profile
 
 
 def get_pk_data_source(api_key: Optional[str] = None) -> PubMedPKDataSource:

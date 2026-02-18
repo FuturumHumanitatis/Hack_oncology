@@ -8,6 +8,16 @@ from datetime import datetime
 
 
 @dataclass
+class StudyInput:
+    """
+    Input parameters for a bioequivalence study.
+    """
+    drug_name: str
+    fasting: bool = True  # True = fasted (натощак), False = fed
+    cv_category: str = "low"  # "low", "medium", "high"
+
+
+@dataclass
 class Drug:
     """
     Drug/препарат entity representing a pharmaceutical compound.

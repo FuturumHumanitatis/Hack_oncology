@@ -48,3 +48,6 @@ coverage.xml
 # Temporary files
 *.log
 /tmp/
+
+# Generated demo output
+demo/example_synopsis_omeprazole.md

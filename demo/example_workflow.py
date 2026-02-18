@@ -1,284 +1,228 @@
 """
-End-to-end demonstration workflow for the oncology clinical trial management system.
-This script demonstrates the complete workflow from drug definition to synopsis generation.
+Demo workflow: omeprazole bioequivalence study (fasted, low CV).
+
+The script performs the full pipeline:
+1. Create StudyInput for omeprazole (fasted, cv_category="low")
+2. Retrieve PK parameters via get_pk_parameters
+3. Select a study design
+4. Calculate sample size (N)
+5. Run regulatory compliance checks
+6. Generate a Markdown synopsis and save it to example_synopsis_omeprazole.md
 """
 import logging
+import os
 from datetime import datetime
 
 from models.domain import (
-    Drug, ClinicalStudy, StudyDesign, StudyPopulation, Endpoint
+    StudyInput, ClinicalStudy, StudyPopulation, Endpoint,
 )
-from pk_data.source_pubmed import get_pk_data_source
+from pk_data.source_pubmed import get_pk_parameters
 from design.logic import get_design_selector
 from stats.sample_size import get_sample_size_calculator
 from reg.checks import get_regulatory_checker
 from synopsis.generator import get_synopsis_generator
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Suppress verbose logs – only warnings and errors reach the console
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
+logging.getLogger().setLevel(logging.WARNING)
+
+
+def _build_markdown(study, sample_size_result, violations, regulatory_body="FDA"):
+    """Return a Markdown-formatted synopsis string."""
+    lines = [
+        f"# {study.title}",
+        "",
+        f"**Protocol:** {study.study_id}  ",
+        f"**Drug:** {study.drug.name} ({study.drug.active_ingredient})  ",
+        f"**Indication:** {study.drug.indication}  ",
+        f"**Date:** {study.created_at.strftime('%Y-%m-%d')}",
+        "",
+        "## Background",
+        "",
+        (
+            f"{study.drug.name} is a {study.drug.dosage_form} formulation "
+            f"containing {study.drug.active_ingredient}, administered "
+            f"via {study.drug.route_of_administration}."
+        ),
+        "",
+    ]
+
+    # PK parameters
+    if study.pk_profile and study.pk_profile.parameters:
+        lines.append("## PK Parameters")
+        lines.append("")
+        lines.append("| Parameter | Value | Unit | CV |")
+        lines.append("|-----------|------:|------|---:|")
+        for p in study.pk_profile.parameters:
+            cv_pct = f"{p.coefficient_of_variation * 100:.0f}%" if p.coefficient_of_variation else "—"
+            lines.append(f"| {p.parameter_name} | {p.value} | {p.unit} | {cv_pct} |")
+        lines.append("")
+
+    # Design
+    if study.design:
+        d = study.design
+        lines.append("## Study Design")
+        lines.append("")
+        lines.append(f"- **Type:** {d.design_type}")
+        lines.append(f"- **Arms:** {d.number_of_arms}")
+        lines.append(f"- **Treatment duration:** {d.treatment_duration} days")
+        lines.append(f"- **Blinding:** {d.blinding}")
+        if d.washout_period:
+            lines.append(f"- **Washout:** {d.washout_period} days")
+        lines.append("")
+
+    # Population
+    if study.population:
+        pop = study.population
+        lines.append("## Study Population")
+        lines.append("")
+        lines.append(f"- Age: {pop.age_range[0]}–{pop.age_range[1]} years")
+        lines.append(f"- Gender: {pop.gender}")
+        if pop.inclusion_criteria:
+            lines.append("")
+            lines.append("**Inclusion criteria:**")
+            for c in pop.inclusion_criteria:
+                lines.append(f"- {c}")
+        if pop.exclusion_criteria:
+            lines.append("")
+            lines.append("**Exclusion criteria:**")
+            for c in pop.exclusion_criteria:
+                lines.append(f"- {c}")
+        lines.append("")
+
+    # Sample size
+    lines.append("## Sample Size")
+    lines.append("")
+    design_key = sample_size_result.get("design", "")
+    if design_key == "crossover":
+        lines.append(f"- **N (adjusted):** {sample_size_result['adjusted_n_subjects']}")
+    else:
+        lines.append(f"- **N per group (adjusted):** {sample_size_result['adjusted_n_per_group']}")
+        lines.append(f"- **Total N (adjusted):** {sample_size_result['adjusted_total_n']}")
+    lines.append(f"- α = {sample_size_result.get('alpha', 0.05)}")
+    lines.append(f"- Power = {sample_size_result.get('power', 0.80)}")
+    lines.append(f"- Dropout rate = {sample_size_result.get('dropout_rate', 0.15) * 100:.0f}%")
+    lines.append("")
+
+    # Regulatory
+    lines.append("## Regulatory Compliance")
+    lines.append("")
+    if violations:
+        for v in violations:
+            lines.append(f"- **[{v.severity.upper()}]** {v.category}: {v.description}")
+    else:
+        lines.append("No issues found — study is compliant.")
+    lines.append("")
+
+    lines.append("---")
+    lines.append(f"*Generated on {datetime.now().strftime('%Y-%m-%d %H:%M')} "
+                 f"for {regulatory_body} submission.*")
+    lines.append("")
+
+    return "\n".join(lines)
 
 
 def main():
-    """
-    Main demonstration workflow.
-    """
-    logger.info("=" * 80)
-    logger.info("ONCOLOGY CLINICAL TRIAL MANAGEMENT SYSTEM - DEMO WORKFLOW")
-    logger.info("=" * 80)
-    
-    # Step 1: Define the drug
-    logger.info("\nSTEP 1: Define the investigational drug")
-    logger.info("-" * 80)
-    
-    drug = Drug(
-        name="Onco-Therapy X",
-        active_ingredient="Compound-123",
-        indication="Advanced Non-Small Cell Lung Cancer (NSCLC)",
-        dosage_form="Oral tablet",
-        route_of_administration="Oral",
-        manufacturer="Pharma Corp Ltd.",
-        approval_status="Investigational"
+    """Run the omeprazole demo workflow."""
+
+    # 1. Study input
+    study_input = StudyInput(
+        drug_name="Omeprazole",
+        fasting=True,
+        cv_category="low",
     )
-    
-    logger.info(f"Drug defined: {drug}")
-    logger.info(f"  - Active ingredient: {drug.active_ingredient}")
-    logger.info(f"  - Indication: {drug.indication}")
-    logger.info(f"  - Dosage form: {drug.dosage_form}")
-    
-    # Step 2: Retrieve PK data
-    logger.info("\nSTEP 2: Retrieve pharmacokinetic (PK) data")
-    logger.info("-" * 80)
-    
-    pk_source = get_pk_data_source()
-    pk_profile = pk_source.search_pk_data(drug)
-    
-    logger.info(f"PK profile retrieved for {drug.name}")
-    logger.info(f"  - Number of parameters: {len(pk_profile.parameters)}")
-    for param in pk_profile.parameters:
-        logger.info(f"  - {param}")
-    
-    # Step 3: Select study design
-    logger.info("\nSTEP 3: Select appropriate study design")
-    logger.info("-" * 80)
-    
+
+    # 2. PK parameters
+    pk_profile = get_pk_parameters(study_input)
+
+    # 3. Select design
     design_selector = get_design_selector()
-    recommended_design = design_selector.recommend_design(
-        drug=drug,
+    design = design_selector.recommend_design(
+        drug=pk_profile.drug,
         pk_profile=pk_profile,
         number_of_treatments=2,
-        study_duration_constraint=60
     )
-    
-    logger.info(f"Recommended design: {recommended_design}")
-    logger.info(f"  - Design type: {recommended_design.design_type}")
-    logger.info(f"  - Number of arms: {recommended_design.number_of_arms}")
-    logger.info(f"  - Treatment duration: {recommended_design.treatment_duration} days")
-    logger.info(f"  - Blinding: {recommended_design.blinding}")
-    
-    # Validate the design
-    is_valid, warnings = design_selector.validate_design(recommended_design)
-    logger.info(f"  - Design validation: {'Valid' if is_valid else 'Invalid'}")
-    if warnings:
-        for warning in warnings:
-            logger.warning(f"    ! {warning}")
-    
-    # Step 4: Calculate sample size
-    logger.info("\nSTEP 4: Calculate required sample size")
-    logger.info("-" * 80)
-    
+
+    # 4. Calculate sample size
     calculator = get_sample_size_calculator(alpha=0.05, power=0.80, dropout_rate=0.15)
-    
-    # Get CV from PK data for calculation
-    auc_param = pk_profile.get_parameter("AUC")
-    cv = auc_param.coefficient_of_variation if auc_param else 0.25
-    
-    if recommended_design.design_type == "crossover":
+
+    if design.design_type == "crossover":
         sample_size_result = calculator.calculate_crossover_design(
-            effect_size=300.0,  # Expected difference in AUC
+            effect_size=300.0,
             std_dev=500.0,
-            correlation=0.6
+            correlation=0.6,
         )
-    else:  # parallel
+        n_display = sample_size_result["adjusted_n_subjects"]
+    else:
         sample_size_result = calculator.calculate_parallel_design(
             effect_size=300.0,
             std_dev=500.0,
-            number_of_arms=recommended_design.number_of_arms
+            number_of_arms=design.number_of_arms,
         )
-    
-    logger.info("Sample size calculated:")
-    if recommended_design.design_type == "crossover":
-        logger.info(f"  - Subjects needed: {sample_size_result['adjusted_n_subjects']}")
-    else:
-        logger.info(f"  - Per group: {sample_size_result['adjusted_n_per_group']}")
-        logger.info(f"  - Total: {sample_size_result['adjusted_total_n']}")
-    logger.info(f"  - Power: {sample_size_result['power']}")
-    logger.info(f"  - Alpha: {sample_size_result['alpha']}")
-    
-    # Step 5: Define study population
-    logger.info("\nSTEP 5: Define study population")
-    logger.info("-" * 80)
-    
+        n_display = sample_size_result["adjusted_total_n"]
+
+    # 5. Regulatory checks
     population = StudyPopulation(
-        age_range=(18, 75),
+        age_range=(18, 55),
         gender="all",
-        disease_stage="Stage IIIB or IV NSCLC",
-        prior_treatment="At least one prior platinum-based chemotherapy",
         inclusion_criteria=[
-            "Histologically confirmed NSCLC",
-            "ECOG performance status 0-1",
-            "Adequate organ function",
-            "Life expectancy ≥ 3 months"
+            "Healthy volunteers",
+            "BMI 18.5–30 kg/m²",
+            "Non-smoker",
         ],
         exclusion_criteria=[
-            "Brain metastases (unless treated and stable)",
-            "Uncontrolled concurrent illness",
-            "Prior treatment with Compound-123",
-            "Pregnancy or lactation"
-        ]
+            "Known hypersensitivity to omeprazole",
+            "Clinically significant illness within 4 weeks",
+        ],
     )
-    
-    logger.info(f"Population defined:")
-    logger.info(f"  - Age range: {population.age_range[0]}-{population.age_range[1]} years")
-    logger.info(f"  - Gender: {population.gender}")
-    logger.info(f"  - Disease stage: {population.disease_stage}")
-    logger.info(f"  - Inclusion criteria: {len(population.inclusion_criteria)} items")
-    logger.info(f"  - Exclusion criteria: {len(population.exclusion_criteria)} items")
-    
-    # Step 6: Define study endpoints
-    logger.info("\nSTEP 6: Define study endpoints")
-    logger.info("-" * 80)
-    
+
     endpoints = [
         Endpoint(
-            name="Overall Response Rate (ORR)",
+            name="AUC₀₋t",
             endpoint_type="primary",
-            description="Proportion of patients with complete or partial response",
-            measurement_timepoints=[28, 56, 84]
+            description="Area under the plasma concentration–time curve",
+            measurement_timepoints=[1, 2, 4, 8, 12, 24],
         ),
         Endpoint(
-            name="Progression-Free Survival (PFS)",
-            endpoint_type="secondary",
-            description="Time from randomization to disease progression or death",
-            measurement_timepoints=[28, 56, 84, 112, 140, 168]
+            name="Cmax",
+            endpoint_type="primary",
+            description="Peak plasma concentration",
+            measurement_timepoints=[1, 2, 4, 8, 12, 24],
         ),
-        Endpoint(
-            name="Safety and Tolerability",
-            endpoint_type="secondary",
-            description="Incidence and severity of adverse events",
-            measurement_timepoints=[7, 14, 21, 28, 56, 84]
-        )
     ]
-    
-    logger.info(f"Endpoints defined: {len(endpoints)}")
-    for endpoint in endpoints:
-        logger.info(f"  - {endpoint}")
-    
-    # Step 7: Create complete study
-    logger.info("\nSTEP 7: Create complete clinical study")
-    logger.info("-" * 80)
-    
+
     study = ClinicalStudy(
-        study_id="ONCO-X-2024-001",
-        title="A Phase II Study of Onco-Therapy X in Patients with Advanced NSCLC",
-        drug=drug,
+        study_id="BE-OME-2024-001",
+        title="Bioequivalence Study of Omeprazole 20 mg Capsules (Fasted)",
+        drug=pk_profile.drug,
         pk_profile=pk_profile,
-        design=recommended_design,
+        design=design,
         population=population,
         endpoints=endpoints,
-        sample_size=sample_size_result.get('adjusted_total_n') or sample_size_result.get('adjusted_n_subjects'),
-        created_at=datetime.now()
+        sample_size=n_display,
+        created_at=datetime.now(),
     )
-    
-    logger.info(f"Study created: {study}")
-    logger.info(f"  - Study ID: {study.study_id}")
-    logger.info(f"  - Sample size: {study.sample_size}")
-    
-    # Step 8: Regulatory compliance check
-    logger.info("\nSTEP 8: Perform regulatory compliance check")
-    logger.info("-" * 80)
-    
+
     checker = get_regulatory_checker(regulatory_body="FDA")
     violations = checker.check_study_compliance(study)
-    
-    logger.info(f"Regulatory compliance check completed:")
-    logger.info(f"  - Violations found: {len(violations)}")
-    
-    if violations:
-        for violation in violations:
-            logger.warning(
-                f"  - [{violation.severity.upper()}] {violation.category}: "
-                f"{violation.description}"
-            )
-    else:
-        logger.info("  - No violations found - study is compliant!")
-    
-    # Get GCP compliance status
-    gcp_compliance = checker.check_gcp_compliance(study)
-    logger.info(f"\nGCP Compliance Requirements:")
-    for requirement, status in gcp_compliance.items():
-        status_str = "✓" if status else "✗"
-        logger.info(f"  {status_str} {requirement.replace('_', ' ').title()}")
-    
-    # Step 9: Generate synopsis
-    logger.info("\nSTEP 9: Generate study synopsis")
-    logger.info("-" * 80)
-    
-    generator = get_synopsis_generator()
-    synopsis = generator.generate_full_synopsis(
-        study=study,
-        sample_size_result=sample_size_result,
-        regulatory_body="FDA"
+
+    # 6. Generate Markdown synopsis
+    synopsis_md = _build_markdown(study, sample_size_result, violations)
+
+    # 7. Save to file
+    output_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "example_synopsis_omeprazole.md",
     )
-    
-    logger.info("Synopsis generated successfully")
-    logger.info(f"  - Synopsis length: {len(synopsis)} characters")
-    
-    # Save synopsis to file
-    output_filename = f"/tmp/synopsis_{study.study_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-    generator.export_to_file(
-        study=study,
-        filename=output_filename,
-        sample_size_result=sample_size_result,
-        regulatory_body="FDA"
-    )
-    
-    logger.info(f"  - Synopsis saved to: {output_filename}")
-    
-    # Display synopsis preview
-    logger.info("\nSYNOPSIS PREVIEW:")
-    logger.info("=" * 80)
-    print("\n" + synopsis[:1500] + "\n... [truncated for display] ...\n")
-    
-    # Step 10: Summary
-    logger.info("\nSTEP 10: Generate study summary")
-    logger.info("-" * 80)
-    
-    summary = generator.generate_summary(study)
-    logger.info("Study Summary:")
-    for key, value in summary.items():
-        logger.info(f"  - {key}: {value}")
-    
-    # Final message
-    logger.info("\n" + "=" * 80)
-    logger.info("DEMO WORKFLOW COMPLETED SUCCESSFULLY!")
-    logger.info("=" * 80)
-    logger.info(f"\nFull synopsis available at: {output_filename}")
-    logger.info("\nNext steps:")
-    logger.info("  1. Review the generated synopsis")
-    logger.info("  2. Address any regulatory violations")
-    logger.info("  3. Submit for ethics committee review")
-    logger.info("  4. Register the trial on ClinicalTrials.gov")
-    logger.info("  5. Obtain regulatory approval before study initiation")
-    logger.info("")
+    with open(output_path, "w", encoding="utf-8") as fh:
+        fh.write(synopsis_md)
+
+    # Console summary (brief)
+    print(f"Design : {design.design_type}")
+    print(f"N      : {n_display}")
+    print(f"Issues : {len(violations)}")
+    print(f"Synopsis saved to {output_path}")
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        logger.error(f"Error in demo workflow: {str(e)}", exc_info=True)
-        raise
+    main()
